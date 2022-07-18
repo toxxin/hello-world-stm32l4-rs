@@ -10,62 +10,41 @@ extern crate cortex_m_rt as rt;
 // #[macro_use(block)]
 // extern crate nb;
 
-// use crate::hal::delay::Delay;
-// use crate::hal::prelude::*;
-// use crate::hal::serial::Serial;
-// use crate::rt::entry;
 use crate::rt::ExceptionFrame;
 use core::panic::PanicInfo;
-// use crate::sh::hio;
-// use core::fmt::Write;
-// use cortex_m::asm;
-
 
 use rtic::app;
 
-#[app(device = stm32l4xx_hal::pac, peripherals = true)]
+#[app(device = stm32l4xx_hal::pac, peripherals = true, dispatchers = [SPI1])]
 mod app {
 
-    use stm32l4xx_hal::{
-        gpio::{gpioa::PA0, gpioc::PC6, Alternate, Edge, Input, Output, Pin, PullUp, PushPull},
-        serial::Serial,
-        delay::Delay,
-        prelude::*,
-    };
+    use stm32l4xx_hal::{gpio::{gpioa::PA2, gpioa::PA3, gpiob::PB3, Alternate, Edge, Input, Output, Pin, PullUp, PushPull}, serial::Serial, delay::Delay, prelude::*, hal, pac};
+    use stm32l4xx_hal::device::USART2;
     use systick_monotonic::{fugit::Duration, Systick};
+    use core::fmt::Write;
 
     // A monotonic timer to enable scheduling in RTIC
     #[monotonic(binds = SysTick, default = true)]
-    type Tonic = Systick<1000>; // 100 Hz / 10 ms granularity
+    type MonoTimer = Systick<1000>; // 1000 Hz / 1 ms granularity
 
-    // Resources shared between tasks
     #[shared]
     struct Shared {
-        // s1: u32,
-        // s2: i32,
+        serial: Serial<USART2, (PA2<Alternate<PushPull, 7>>, PA3<Alternate<PushPull, 7>>)>
     }
 
-    // Local resources to specific tasks (cannot be shared)
     #[local]
     struct Local {
-        // l1: u8,
-        // l2: i8,
+        led: PB3<Output<PushPull>>,
+        state: bool
     }
 
     #[init]
     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
         // let systick = cx.core.SYST;
 
-        // Initialize the monotonic (SysTick rate in QEMU is 12 MHz)
-        // let mono = Systick::new(systick, 12_000_000);
-
         let mut flash = cx.device.FLASH.constrain();
         let mut rcc = cx.device.RCC.constrain();
         let mut pwr = cx.device.PWR.constrain(&mut rcc.apb1r1);
-
-        // let mut flash = dp.FLASH.constrain(); // .constrain();
-        // let mut rcc = dp.RCC.constrain();
-        // let mut pwr = dp.PWR.constrain(&mut rcc.apb1r1);
 
         let clocks = rcc
             .cfgr
@@ -76,92 +55,61 @@ mod app {
 
         let mut gpioa = cx.device.GPIOA.split(&mut rcc.ahb2);
 
-        // let mut txp = gpioa.pa2.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
-        // let rxp = gpioa
-        //     .pa3
-        //     .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
-        //
-        // let mut gpiob = dp.GPIOB.split(&mut rcc.ahb2);
-        // let mut led = gpiob
-        //     .pb3
-        //     .into_push_pull_output(&mut gpiob.moder, &mut gpiob.otyper);
-        // led.set_high();
-        //
+        let mut txp = gpioa.pa2.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let rxp = gpioa
+            .pa3
+            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+
+        let mut gpiob = cx.device.GPIOB.split(&mut rcc.ahb2);
+        let mut led = gpiob
+            .pb3
+            .into_push_pull_output(&mut gpiob.moder, &mut gpiob.otyper);
+        led.set_high();
+
         // let mut timer = Delay::new(cp.SYST, clocks);
-        //
-        // let serial = Serial::usart2(dp.USART2, (txp, rxp), 115_200.bps(), clocks, &mut rcc.apb1r1);
-        // let (mut tx, mut rx) = serial.split();
-        //
-        // let sent = b'X';
-        // let mut value: u8 = 0;
-        //
-        // writeln!(tx, "value: {:02}\r", value).unwrap();
+
+        let serial = Serial::usart2(cx.device.USART2, (txp, rxp), 115_200.bps(), clocks, &mut rcc.apb1r1);
 
         let mono = Systick::new(cx.core.SYST, 48_000_000);
 
-        (Shared {}, Local {}, init::Monotonics(mono))
+        // Schedule the blinking task
+        blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
+        heart::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
+
+        (Shared{serial}, Local { led, state: false }, init::Monotonics(mono))
+    }
+
+    #[task(local = [led, state], shared = [serial])]
+    fn blink(cx: blink::Context) {
+        if *cx.local.state {
+            cx.local.led.set_high();
+            *cx.local.state = false;
+        } else {
+            cx.local.led.set_low();
+            *cx.local.state = true;
+        }
+
+        let mut serial = cx.shared.serial;
+        serial.lock(|s: &mut Serial<USART2, (PA2<Alternate<PushPull, 7>>, PA3<Alternate<PushPull, 7>>)>| {
+            let value: u8 = 1;
+            writeln!(s, "Hello, World! {:02}\r", value).unwrap();
+        });
+
+        blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
+    }
+
+    #[task(shared = [serial])]
+    fn heart(cx: heart::Context) {
+        let mut serial = cx.shared.serial;
+        serial.lock(|s: &mut Serial<USART2, (PA2<Alternate<PushPull, 7>>, PA3<Alternate<PushPull, 7>>)>| {
+            static mut value: u8 = 1;
+            writeln!(s, "Heart{{bit}} task! {:02}\r", unsafe {value} ).unwrap();
+        });
+
+        heart::spawn_after(Duration::<u64, 1, 1000>::from_ticks(500)).unwrap();
     }
 }
 
-/*
-#[entry]
-fn main() -> ! {
-    let cp = cortex_m::Peripherals::take().unwrap();
-    let dp = hal::stm32::Peripherals::take().unwrap();
-
-    let mut flash = dp.FLASH.constrain(); // .constrain();
-    let mut rcc = dp.RCC.constrain();
-    let mut pwr = dp.PWR.constrain(&mut rcc.apb1r1);
-
-    // Try a different clock configuration
-    // let clocks = rcc.cfgr.hclk(8.MHz()).freeze(&mut flash.acr, &mut pwr);
-    // let clocks = rcc.cfgr
-    //     .sysclk(64.MHz())
-    //     .pclk1(32.MHz())
-    //     .freeze(&mut flash.acr, &mut pwr);
-    let clocks = rcc
-        .cfgr
-        .sysclk(80.MHz())
-        .pclk1(80.MHz())
-        .pclk2(80.MHz())
-        .freeze(&mut flash.acr, &mut pwr);
-
-    let mut gpioa = dp.GPIOA.split(&mut rcc.ahb2);
-
-    let mut txp = gpioa.pa2.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
-    let rxp = gpioa
-        .pa3
-        .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
-
-    let mut gpiob = dp.GPIOB.split(&mut rcc.ahb2);
-    let mut led = gpiob
-        .pb3
-        .into_push_pull_output(&mut gpiob.moder, &mut gpiob.otyper);
-    led.set_high();
-
-    let mut timer = Delay::new(cp.SYST, clocks);
-
-    let serial = Serial::usart2(dp.USART2, (txp, rxp), 115_200.bps(), clocks, &mut rcc.apb1r1);
-    let (mut tx, mut rx) = serial.split();
-
-    let sent = b'X';
-    let mut value: u8 = 0;
-
-    loop {
-        // block!(timer.wait()).unwrap();
-        timer.delay_ms(1000_u32);
-        led.set_high();
-        // block!(timer.wait()).unwrap();
-        timer.delay_ms(1000_u32);
-        led.set_low();
-
-        // tx.write(b" over the lazy dog.").wait();
-
-        writeln!(tx, "value: {:02}\r", value).unwrap();
-       // block!(tx.write(sent)).ok();
-    }
-}
-*/
 #[exception]
 unsafe fn HardFault(ef: &ExceptionFrame) -> ! {
     panic!("{:#?}", ef);
