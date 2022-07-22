@@ -37,7 +37,8 @@ mod app {
     #[local]
     struct Local {
         led: PB3<Output<PushPull>>,
-        state: bool
+        state: bool,
+        tim: Timer<pac::TIM2>,
     }
 
     #[init]
@@ -55,12 +56,8 @@ mod app {
             .pclk2(80.MHz())
             .freeze(&mut flash.acr, &mut pwr);
 
-        // unsafe { NVIC::unmask(hal::stm32::Interrupt::TIM1) };
-        // let mut timer7 = cx.device.TIM7.constrain(&mut rcc.apb1r1);
-        let mut timer7 = Timer::tim7(cx.device.TIM7, 1.Hz(), clocks, &mut rcc.apb1r1);
-
-        // Timer::tim1(cx.device.TIM1, 1.hz(), clocks, &mut rcc.apb2);
-        timer7.listen(Event::TimeOut);
+        let mut tim = Timer::tim2(cx.device.TIM2, 100.Hz(), clocks, &mut rcc.apb1r1);
+        tim.listen(Event::TimeOut);
 
         let mut gpioa = cx.device.GPIOA.split(&mut rcc.ahb2);
 
@@ -85,7 +82,7 @@ mod app {
         blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
         heart::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
 
-        (Shared{serial}, Local { led, state: false }, init::Monotonics(mono))
+        (Shared{serial}, Local { led, state: false, tim }, init::Monotonics(mono))
     }
 
     #[task(local = [led, state], shared = [serial])]
@@ -118,8 +115,9 @@ mod app {
         heart::spawn_after(Duration::<u64, 1, 1000>::from_ticks(500)).unwrap();
     }
 
-    #[task(binds = TIM7, priority = 1, shared = [serial])]
-    fn timer7(cx: timer7::Context) {
+    #[task(binds = TIM2, priority = 1, local = [tim], shared = [serial])]
+    fn timer(cx: timer::Context) {
+        let _ = cx.local.tim.clear_interrupt(Event::TimeOut);
         let mut serial = cx.shared.serial;
         serial.lock(|s: &mut Serial<USART2, (PA2<Alternate<PushPull, 7>>, PA3<Alternate<PushPull, 7>>)>| {
             writeln!(s, "timer7\r").unwrap();
