@@ -70,7 +70,7 @@ mod app {
 
         let serial = Serial::usart2(cx.device.USART2, (txp, rxp), 115_200.bps(), clocks, &mut rcc.apb1r1);
 
-        let mono = Systick::new(cx.core.SYST, 48_000_000);
+        let mono = Systick::new(cx.core.SYST, 80_000_000);
 
         // Schedule the blinking task
         blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
