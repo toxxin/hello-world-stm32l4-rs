@@ -74,7 +74,8 @@ mod app {
 
         // let mut timer = Delay::new(cp.SYST, clocks);
 
-        let serial = Serial::usart2(cx.device.USART2, (txp, rxp), 115_200.bps(), clocks, &mut rcc.apb1r1);
+        let mut serial = Serial::usart2(cx.device.USART2, (txp, rxp), 115_200.bps(), clocks, &mut rcc.apb1r1);
+        serial.listen(SerialEvent::Rxne);
 
         let mono = Systick::new(cx.core.SYST, 80_000_000);
 
