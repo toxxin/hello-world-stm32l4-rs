@@ -23,7 +23,7 @@ mod app {
     use systick_monotonic::{fugit::Duration, Systick};
     use core::fmt::Write;
     use stm32l4xx_hal::timer::{Event, Timer};
-    // use cortex_m::peripheral::NVIC;
+    use stm32l4xx_hal::serial::{Event as SerialEvent};
 
     // A monotonic timer to enable scheduling in RTIC
     #[monotonic(binds = SysTick, default = true)]
