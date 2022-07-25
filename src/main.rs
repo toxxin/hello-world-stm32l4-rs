@@ -18,12 +18,12 @@ use rtic::app;
 #[app(device = stm32l4xx_hal::pac, peripherals = true, dispatchers = [SPI1])]
 mod app {
 
-    use stm32l4xx_hal::{gpio::{gpioa::PA2, gpioa::PA3, gpiob::PB3, Alternate, Edge, Input, Output, Pin, PullUp, PushPull}, serial::Serial, delay::Delay, prelude::*, hal, pac};
-    use stm32l4xx_hal::device::USART2;
+    use stm32l4xx_hal::{gpio::{gpioa::PA2, gpioa::PA15, gpiob::PB3, Alternate, Edge, Input, Output, Pin, PullUp, PushPull}, serial::Serial, delay::Delay, prelude::*, hal, pac};
     use systick_monotonic::{fugit::Duration, Systick};
     use core::fmt::Write;
     use stm32l4xx_hal::timer::{Event, Timer};
     use stm32l4xx_hal::serial::{Event as SerialEvent};
+    use stm32l4xx_hal::serial;
 
     // A monotonic timer to enable scheduling in RTIC
     #[monotonic(binds = SysTick, default = true)]
@@ -31,7 +31,7 @@ mod app {
 
     #[shared]
     struct Shared {
-        serial: Serial<USART2, (PA2<Alternate<PushPull, 7>>, PA3<Alternate<PushPull, 7>>)>
+        tx: serial::Tx<stm32l4xx_hal::pac::USART2>
     }
 
     #[local]
@@ -39,6 +39,7 @@ mod app {
         led: PB3<Output<PushPull>>,
         state: bool,
         tim: Timer<pac::TIM2>,
+        rx: serial::Rx<stm32l4xx_hal::pac::USART2>,
     }
 
     #[init]
@@ -61,10 +62,8 @@ mod app {
 
         let mut gpioa = cx.device.GPIOA.split(&mut rcc.ahb2);
 
-        let mut txp = gpioa.pa2.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
-        let rxp = gpioa
-            .pa3
-            .into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let txp = gpioa.pa2.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrl);
+        let rxp = gpioa.pa15.into_alternate(&mut gpioa.moder, &mut gpioa.otyper, &mut gpioa.afrh);
 
         let mut gpiob = cx.device.GPIOB.split(&mut rcc.ahb2);
         let mut led = gpiob
@@ -75,7 +74,9 @@ mod app {
         // let mut timer = Delay::new(cp.SYST, clocks);
 
         let mut serial = Serial::usart2(cx.device.USART2, (txp, rxp), 115_200.bps(), clocks, &mut rcc.apb1r1);
+
         serial.listen(SerialEvent::Rxne);
+        let (tx, rx) = serial.split();
 
         let mono = Systick::new(cx.core.SYST, 80_000_000);
 
@@ -83,10 +84,10 @@ mod app {
         blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
         heart::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
 
-        (Shared{serial}, Local { led, state: false, tim }, init::Monotonics(mono))
+        (Shared{tx}, Local { rx, led, state: false, tim }, init::Monotonics(mono))
     }
 
-    #[task(local = [led, state], shared = [serial])]
+    #[task(local = [led, state], shared = [tx])]
     fn blink(cx: blink::Context) {
         if *cx.local.state {
             cx.local.led.set_high();
@@ -96,8 +97,8 @@ mod app {
             *cx.local.state = true;
         }
 
-        let mut serial = cx.shared.serial;
-        serial.lock(|s: &mut Serial<USART2, (PA2<Alternate<PushPull, 7>>, PA3<Alternate<PushPull, 7>>)>| {
+        let mut serial = cx.shared.tx;
+        serial.lock(|s: &mut serial::Tx<stm32l4xx_hal::pac::USART2>| {
             let value: u8 = 1;
             writeln!(s, "Hello, World! {:02}\r", value).unwrap();
         });
@@ -105,10 +106,10 @@ mod app {
         blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
     }
 
-    #[task(shared = [serial])]
+    #[task(shared = [tx])]
     fn heart(cx: heart::Context) {
-        let mut serial = cx.shared.serial;
-        serial.lock(|s: &mut Serial<USART2, (PA2<Alternate<PushPull, 7>>, PA3<Alternate<PushPull, 7>>)>| {
+        let mut serial = cx.shared.tx;
+        serial.lock(|s: &mut serial::Tx<stm32l4xx_hal::pac::USART2>| {
             static mut value: u8 = 1;
             writeln!(s, "Heart{{bit}} task! {:02}\r", unsafe {value} ).unwrap();
         });
@@ -116,13 +117,23 @@ mod app {
         heart::spawn_after(Duration::<u64, 1, 1000>::from_ticks(500)).unwrap();
     }
 
-    #[task(binds = TIM2, priority = 1, local = [tim], shared = [serial])]
+    #[task(binds = TIM2, priority = 1, local = [tim], shared = [tx])]
     fn timer(cx: timer::Context) {
         let _ = cx.local.tim.clear_interrupt(Event::TimeOut);
-        let mut serial = cx.shared.serial;
-        serial.lock(|s: &mut Serial<USART2, (PA2<Alternate<PushPull, 7>>, PA3<Alternate<PushPull, 7>>)>| {
-            writeln!(s, "timer7\r").unwrap();
+        let mut serial = cx.shared.tx;
+        serial.lock(|_: &mut serial::Tx<stm32l4xx_hal::pac::USART2>| {
+            // writeln!(s, "timer7\r").unwrap();
         });
+    }
+
+    #[task(binds = USART2, priority = 3, shared = [tx], local = [rx])]
+    fn uart_rx(cx: uart_rx::Context) {
+        if let Ok(b) = cx.local.rx.read() {
+            let mut stx = cx.shared.tx;
+            stx.lock(|s: &mut serial::Tx<stm32l4xx_hal::pac::USART2>| {
+                writeln!(s, "uart_rx: {}\r", b as char).unwrap();
+            });
+        }
     }
 }
 
