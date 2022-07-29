@@ -21,6 +21,7 @@ mod app {
     use stm32l4xx_hal::{gpio::{gpioa::PA2, gpioa::PA15, gpiob::PB3, Alternate, Edge, Input, Output, Pin, PullUp, PushPull}, serial::Serial, delay::Delay, prelude::*, hal, pac};
     use systick_monotonic::{fugit::Duration, Systick};
     use core::fmt::Write;
+    use defmt_bbq::DefmtConsumer;
     use stm32l4xx_hal::timer::{Event, Timer};
     use stm32l4xx_hal::serial::{Event as SerialEvent};
     use stm32l4xx_hal::serial;
@@ -31,7 +32,8 @@ mod app {
 
     #[shared]
     struct Shared {
-        tx: serial::Tx<stm32l4xx_hal::pac::USART2>
+        tx: serial::Tx<stm32l4xx_hal::pac::USART2>,
+        consumer: DefmtConsumer,
     }
 
     #[local]
@@ -78,13 +80,18 @@ mod app {
         serial.listen(SerialEvent::Rxne);
         let (tx, rx) = serial.split();
 
+        let mut consumer = defmt_bbq::init().unwrap();
+
+        defmt::println!("Hello, world+++++!");
+
         let mono = Systick::new(cx.core.SYST, 80_000_000);
 
         // Schedule the blinking task
         blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
         heart::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
+        logger::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
 
-        (Shared{tx}, Local { rx, led, state: false, tim }, init::Monotonics(mono))
+        (Shared{tx, consumer}, Local { rx, led, state: false, tim }, init::Monotonics(mono))
     }
 
     #[task(local = [led, state], shared = [tx])]
@@ -134,6 +141,32 @@ mod app {
                 writeln!(s, "uart_rx: {}\r", b as char).unwrap();
             });
         }
+    }
+
+    #[task(priority = 1, shared = [tx, consumer])]
+    fn logger(cx: logger::Context)
+    {
+        let mut con = cx.shared.consumer;
+        con.lock(|c: &mut DefmtConsumer| {
+            if let Ok(grant) = c.read() {
+                let mut stx = cx.shared.tx;
+
+                stx.lock(|s: &mut serial::Tx<stm32l4xx_hal::pac::USART2>| {
+
+                    for byte in grant.buf() {
+                        // block!(cx.local.serial2.write(*byte)).unwrap();
+                        writeln!(s, "{}\r", *byte).unwrap();
+                    }
+                });
+
+                // Then when done, make sure you release the grant
+                // to free the space for future logging.
+                let glen = grant.len();
+                grant.release(glen);
+            }
+        });
+
+        logger::spawn_after(Duration::<u64, 1, 1000>::from_ticks(100)).unwrap();
     }
 }
 
