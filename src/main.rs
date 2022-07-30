@@ -15,16 +15,17 @@ use core::panic::PanicInfo;
 
 use rtic::app;
 
-#[app(device = stm32l4xx_hal::pac, peripherals = true, dispatchers = [SPI1])]
+#[app(device = stm32l4xx_hal::pac, peripherals = true, dispatchers = [EXTI0, EXTI1])]
 mod app {
 
-    use stm32l4xx_hal::{gpio::{gpioa::PA2, gpioa::PA15, gpiob::PB3, Alternate, Edge, Input, Output, Pin, PullUp, PushPull}, serial::Serial, delay::Delay, prelude::*, hal, pac};
+    use stm32l4xx_hal::{gpio::{gpioa::PA2, gpioa::PA15, gpiob::PB3, gpiob::PB6, gpiob::PB7, Alternate, Edge, Input, Output, Pin, PullUp, PushPull, OpenDrain}, i2c::I2c, serial::Serial, delay::Delay, prelude::*, hal, pac};
     use systick_monotonic::{fugit::Duration, Systick};
     use core::fmt::Write;
     use defmt_bbq::DefmtConsumer;
     use stm32l4xx_hal::timer::{Event, Timer};
     use stm32l4xx_hal::serial::{Event as SerialEvent};
     use stm32l4xx_hal::serial;
+    use stm32l4xx_hal::i2c;
 
     // A monotonic timer to enable scheduling in RTIC
     #[monotonic(binds = SysTick, default = true)]
@@ -33,6 +34,7 @@ mod app {
     #[shared]
     struct Shared {
         tx: serial::Tx<stm32l4xx_hal::pac::USART2>,
+        i2c1: i2c::I2c<pac::I2C1, (PB6<Alternate<OpenDrain, 4>>, PB7<Alternate<OpenDrain, 4>>)>,
         consumer: DefmtConsumer,
     }
 
@@ -82,7 +84,16 @@ mod app {
 
         let mut consumer = defmt_bbq::init().unwrap();
 
-        defmt::println!("Hello, world+++++!");
+        // defmt::println!("Hello, world+++++!");
+
+        // I2C configuration
+        let mut scl = gpiob.pb6.into_alternate_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+        let mut sda = gpiob.pb7.into_alternate_open_drain(&mut gpiob.moder, &mut gpiob.otyper, &mut gpiob.afrl);
+
+        scl.internal_pull_up(&mut gpiob.pupdr, true);
+        sda.internal_pull_up(&mut gpiob.pupdr, true);
+
+        let mut i2c1 = I2c::i2c1(cx.device.I2C1, (scl, sda), i2c::Config::new(100.kHz(), clocks), &mut rcc.apb1r1);
 
         let mono = Systick::new(cx.core.SYST, 80_000_000);
 
@@ -90,8 +101,9 @@ mod app {
         blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
         heart::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
         logger::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
+        indication_tick::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
 
-        (Shared{tx, consumer}, Local { rx, led, state: false, tim }, init::Monotonics(mono))
+        (Shared{tx, i2c1, consumer}, Local { rx, led, state: false, tim }, init::Monotonics(mono))
     }
 
     #[task(local = [led, state], shared = [tx])]
@@ -141,6 +153,18 @@ mod app {
                 writeln!(s, "uart_rx: {}\r", b as char).unwrap();
             });
         }
+    }
+
+    #[task(priority = 2, shared = [tx, i2c1])]
+    fn indication_tick(cx: indication_tick::Context)
+    {
+        let mut i2c_bus = cx.shared.i2c1;
+        let mut buffer = [0u8; 7];
+        i2c_bus.lock(|iface: &mut i2c::I2c<stm32l4xx_hal::pac::I2C1, (PB6<Alternate<OpenDrain, 4>>, PB7<Alternate<OpenDrain, 4>>)>| {
+            iface.write(0x3c, &buffer).unwrap();
+        });
+
+        indication_tick::spawn_after(Duration::<u64, 1, 1000>::from_ticks(100)).unwrap();
     }
 
     #[task(priority = 1, shared = [tx, consumer])]
