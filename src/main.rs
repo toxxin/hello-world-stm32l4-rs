@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 
+#[path = "./drivers/is31fl3235a.rs"]
+mod is31fl3235a;
+
 extern crate cortex_m;
 #[macro_use]
 extern crate cortex_m_rt as rt;
@@ -15,9 +18,9 @@ use core::panic::PanicInfo;
 
 use rtic::app;
 
+
 #[app(device = stm32l4xx_hal::pac, peripherals = true, dispatchers = [EXTI0, EXTI1])]
 mod app {
-
     use stm32l4xx_hal::{gpio::{gpioa::PA2, gpioa::PA15, gpiob::PB3, gpiob::PB6, gpiob::PB7, Alternate, Edge, Input, Output, Pin, PullUp, PushPull, OpenDrain}, i2c::I2c, serial::Serial, delay::Delay, prelude::*, hal, pac};
     use systick_monotonic::{fugit::Duration, Systick};
     use core::fmt::Write;
@@ -26,6 +29,10 @@ mod app {
     use stm32l4xx_hal::serial::{Event as SerialEvent};
     use stm32l4xx_hal::serial;
     use stm32l4xx_hal::i2c;
+    use crate::is31fl3235a;
+    use crate::is31fl3235a::Register;
+
+    const LED_DRIVER_I2C_ADDR: u8 = 0x3c;
 
     // A monotonic timer to enable scheduling in RTIC
     #[monotonic(binds = SysTick, default = true)]
@@ -34,7 +41,6 @@ mod app {
     #[shared]
     struct Shared {
         tx: serial::Tx<stm32l4xx_hal::pac::USART2>,
-        i2c1: i2c::I2c<pac::I2C1, (PB6<Alternate<OpenDrain, 4>>, PB7<Alternate<OpenDrain, 4>>)>,
         consumer: DefmtConsumer,
     }
 
@@ -42,8 +48,10 @@ mod app {
     struct Local {
         led: PB3<Output<PushPull>>,
         state: bool,
+        led_driver_st: bool,
         tim: Timer<pac::TIM2>,
         rx: serial::Rx<stm32l4xx_hal::pac::USART2>,
+        led_driver: is31fl3235a::Is31fl3235a<i2c::I2c<pac::I2C1, (PB6<Alternate<OpenDrain, 4>>, PB7<Alternate<OpenDrain, 4>>)>>,
     }
 
     #[init]
@@ -97,13 +105,17 @@ mod app {
 
         let mono = Systick::new(cx.core.SYST, 80_000_000);
 
+        let mut led_driver = is31fl3235a::Is31fl3235a::new(i2c1, LED_DRIVER_I2C_ADDR).unwrap();
+
+        led_driver.power_on().unwrap();
+
         // Schedule the blinking task
         blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
         heart::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
         logger::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
         indication_tick::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
 
-        (Shared{tx, i2c1, consumer}, Local { rx, led, state: false, tim }, init::Monotonics(mono))
+        (Shared{tx, consumer}, Local { rx, led, led_driver, state: false, led_driver_st: false, tim }, init::Monotonics(mono))
     }
 
     #[task(local = [led, state], shared = [tx])]
@@ -155,16 +167,19 @@ mod app {
         }
     }
 
-    #[task(priority = 2, shared = [tx, i2c1])]
+    #[task(priority = 1, shared = [tx], local = [led_driver, led_driver_st])]
     fn indication_tick(cx: indication_tick::Context)
     {
-        let mut i2c_bus = cx.shared.i2c1;
-        let mut buffer = [0u8; 7];
-        i2c_bus.lock(|iface: &mut i2c::I2c<stm32l4xx_hal::pac::I2C1, (PB6<Alternate<OpenDrain, 4>>, PB7<Alternate<OpenDrain, 4>>)>| {
-            iface.write(0x3c, &buffer).unwrap();
-        });
+        let mut led_drv = cx.local.led_driver;
+        if *cx.local.led_driver_st {
+            led_drv.set_pwm(1, 0x1).unwrap();
+            *cx.local.led_driver_st = false;
+        } else {
+            led_drv.set_pwm(1, 0x0).unwrap();
+            *cx.local.led_driver_st = true;
+        }
 
-        indication_tick::spawn_after(Duration::<u64, 1, 1000>::from_ticks(100)).unwrap();
+        indication_tick::spawn_after(Duration::<u64, 1, 1000>::from_ticks(500)).unwrap();
     }
 
     #[task(priority = 1, shared = [tx, consumer])]
