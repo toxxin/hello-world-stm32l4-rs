@@ -49,7 +49,7 @@ pub enum OutputCurrent {
 
 pub enum OutputFrequency {
     Freq3Hz = 0x0,
-    Freq2kHz = 0x1,
+    Freq22kHz = 0x1,
 }
 
 /// Is31fl3235a driver
