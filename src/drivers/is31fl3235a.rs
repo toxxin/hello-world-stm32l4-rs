@@ -28,6 +28,8 @@ pub enum Register {
     LedControl = 0x2A,
     /// Control Control register
     GlobalControl = 0x4A,
+    /// OutputFrequency register
+    OutputFrequency = 0x4B,
     /// Reset all registers
     Reset = 0x4F,
 }
@@ -100,6 +102,12 @@ impl<I2C, E> Is31fl3235a<I2C>
 
     pub fn power_off(&mut self) -> Result<(), E> {
         let mut temp = [Register::Shutdown as u8, 0x0];
+        self.i2c.write(self.addr, &temp)?;
+        Ok(())
+    }
+
+    pub fn set_frequency(&mut self, f: OutputFrequency) -> Result<(), E> {
+        let mut temp = [Register::OutputFrequency as u8, f as u8];
         self.i2c.write(self.addr, &temp)?;
         Ok(())
     }
