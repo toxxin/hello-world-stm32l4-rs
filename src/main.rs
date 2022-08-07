@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-#[path = "./drivers/is31fl3235a.rs"]
+#[path = "../../is31fl3235a/src/lib.rs"]
 mod is31fl3235a;
 
 extern crate cortex_m;
@@ -191,10 +191,9 @@ mod app {
                 let mut stx = cx.shared.tx;
 
                 stx.lock(|s: &mut serial::Tx<stm32l4xx_hal::pac::USART2>| {
-
+                    // writeln!(s, "len {}\r", grant.len()).unwrap();
                     for byte in grant.buf() {
-                        // block!(cx.local.serial2.write(*byte)).unwrap();
-                        writeln!(s, "{}\r", *byte).unwrap();
+                        writeln!(s, "{}\r", *byte as char).unwrap();
                     }
                 });
 
@@ -204,6 +203,8 @@ mod app {
                 grant.release(glen);
             }
         });
+
+        // defmt::error!("test");
 
         logger::spawn_after(Duration::<u64, 1, 1000>::from_ticks(100)).unwrap();
     }
